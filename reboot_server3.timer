@@ -1,0 +1,12 @@
+[Unit]
+Description=Timer for Server 3 daily reboot at 08:55
+Requires=reboot_server3.service
+
+[Timer]
+OnCalendar=*-*-* 08:55:00
+Persistent=true
+RandomizedDelaySec=0
+AccuracySec=1us
+
+[Install]
+WantedBy=timers.target

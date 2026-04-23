@@ -4,6 +4,7 @@ import asyncio
 import logging
 import socket
 import subprocess
+import time
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 import yandexcloud
@@ -59,10 +60,7 @@ class YandexCloudVMManager:
             self.logger.info(f"Stopping instance {instance_id}")
             request = StopInstanceRequest(instance_id=instance_id)
             
-            # Используем встроенный метод SDK для ожидания
             operation = self.instance_service.Stop(request)
-            
-            # Принудительно ожидаем завершения операции через SDK
             self.sdk.wait_operation_and_get_result(operation, timeout=120)
             
             self.logger.info(f"Instance {instance_id} stopped successfully")
@@ -79,10 +77,7 @@ class YandexCloudVMManager:
             self.logger.info(f"Starting instance {instance_id}")
             request = StartInstanceRequest(instance_id=instance_id)
             
-            # Используем встроенный метод SDK для ожидания
             operation = self.instance_service.Start(request)
-            
-            # Принудительно ожидаем завершения операции через SDK
             self.sdk.wait_operation_and_get_result(operation, timeout=300)
             
             self.logger.info(f"Instance {instance_id} started successfully")
@@ -118,14 +113,12 @@ class YandexCloudVMManager:
             self.logger.debug(f"Ping check failed for {ip}: {e}")
             return False
     
-    def wait_for_server_ready(self, ip: str, timeout: int = 300) -> bool:
+    def wait_for_server_ready(self, ip: str, timeout: int = 120) -> bool:
         """
-        Ожидать, пока сервер станет доступным.
+        Ожидать, пока сервер станет доступным (таймаут 2 минуты).
         Проверяет сначала ping, затем TCP порт 22 (SSH).
         Возвращает True, если сервер доступен.
         """
-        import time
-        
         start_time = time.time()
         check_count = 0
         
@@ -187,11 +180,13 @@ class YandexCloudVMManager:
         # Останавливаем ВМ
         self.logger.info(f"Stopping {vm_name}...")
         if notifier:
-            await notifier.send_message(f"⏸️ Останавливаем {vm_name}...")
+            await notifier.update_status(vm_name, "stopping", "⏸️")
         
         success, error = self.stop_instance(instance_id)
         if not success:
             result['errors'].append(f"Stop failed: {error}")
+            if notifier:
+                await notifier.update_status(vm_name, "error", "❌")
             return result
         
         self.logger.info(f"{vm_name} stopped successfully")
@@ -202,11 +197,13 @@ class YandexCloudVMManager:
         # Запускаем ВМ
         self.logger.info(f"Starting {vm_name}...")
         if notifier:
-            await notifier.send_message(f"▶️ Запускаем {vm_name}...")
+            await notifier.update_status(vm_name, "starting", "▶️")
         
         success, error = self.start_instance(instance_id)
         if not success:
             result['errors'].append(f"Start failed: {error}")
+            if notifier:
+                await notifier.update_status(vm_name, "error", "❌")
             return result
         
         self.logger.info(f"{vm_name} started successfully")
@@ -214,36 +211,29 @@ class YandexCloudVMManager:
         # Ожидаем доступности сервера
         self.logger.info(f"Waiting for {vm_name} ({vm_ip}) to become available...")
         if notifier:
-            await notifier.send_message(
-                f"⏳ Ожидаем доступности {vm_name} ({vm_ip})...\n"
-                f"Это может занять до 5 минут."
-            )
+            await notifier.update_status(vm_name, "waiting", "⏳")
         
-        # Проверяем доступность в отдельном потоке (чтобы не блокировать асинхронность)
+        # Проверяем доступность в отдельном потоке (таймаут 120 секунд = 2 минуты)
         loop = asyncio.get_event_loop()
         is_ready = await loop.run_in_executor(
             None, 
             self.wait_for_server_ready, 
             vm_ip, 
-            300  # 5 минут таймаут
+            120  # 2 минуты таймаут
         )
         
         if not is_ready:
-            result['errors'].append(f"Server {vm_ip} did not become ready within timeout")
+            result['errors'].append(f"Server {vm_ip} did not become ready within 2 minutes")
             if notifier:
-                await notifier.send_message(
-                    f"⚠️ **ВНИМАНИЕ!**\n"
-                    f"Сервер {vm_name} запущен, но не отвечает на запросы.\n"
-                    f"Проверьте статус вручную."
-                )
-        else:
-            self.logger.info(f"{vm_name} is now available")
-            if notifier:
-                await notifier.send_message(f"✅ {vm_name} доступен и отвечает на запросы")
-            
-            # Дополнительная пауза для стабилизации сервисов
-            self.logger.info(f"Waiting additional 30 seconds for services to stabilize...")
-            await asyncio.sleep(30)
+                await notifier.update_status(vm_name, "error", "❌")
+            return result
+        
+        self.logger.info(f"{vm_name} is now available")
+        if notifier:
+            await notifier.update_status(vm_name, "ready", "✅")
+        
+        # Дополнительная пауза для стабилизации сервисов (10 секунд)
+        await asyncio.sleep(10)
         
         # Проверяем финальный статус ВМ
         final_status, error = self.get_instance_status(instance_id)

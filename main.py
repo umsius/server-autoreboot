@@ -54,99 +54,235 @@ class TelegramNotifier:
         self.bot_token = os.getenv('BOT_TOKEN')
         self.admin_ids = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
         self.bot = Bot(token=self.bot_token) if self.bot_token else None
+        self.status_messages = {}  # Храним ID сообщений для каждого сервера
     
     async def send_message(self, message: str):
-        """Отправить сообщение всем админам"""
+        """Отправить новое сообщение всем админам"""
         if not self.bot:
             logger.error("Bot not initialized")
             return
         
         for admin_id in self.admin_ids:
             try:
-                await self.bot.send_message(
+                msg = await self.bot.send_message(
                     chat_id=admin_id,
                     text=message,
                     parse_mode='Markdown'
                 )
                 logger.info(f"Message sent to {admin_id}")
-                await asyncio.sleep(0.5)
+                return msg
             except TelegramError as e:
                 logger.error(f"Failed to send to {admin_id}: {e}")
+        return None
     
-    async def send_restart_notification(self, result: dict):
-        """Отправить уведомление о результате перезагрузки"""
+    async def edit_message(self, message_id: int, text: str):
+        """Отредактировать существующее сообщение"""
+        if not self.bot:
+            return
+        
+        for admin_id in self.admin_ids:
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=admin_id,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode='Markdown'
+                )
+                logger.info(f"Message {message_id} edited")
+            except TelegramError as e:
+                logger.error(f"Failed to edit message {message_id}: {e}")
+    
+    async def send_start_notification(self, server_name: str, server_ip: str, instance_id: str):
+        """Отправить начальное сообщение и сохранить его ID"""
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        if result.get('success', False):
+        message = f"""🔄 **Перезагрузка сервера** 🔄
+
+🖥️ **{server_name}** ({server_ip})
+🆔 `{instance_id}`
+⏰ Время: {current_time}
+
+⏸️ **Статус:** Останавливаем сервер..."""
+        
+        msg = await self.send_message(message)
+        if msg:
+            self.status_messages[server_name] = msg.message_id
+        return msg
+    
+    async def update_status(self, server_name: str, status: str, emoji: str = "⏳"):
+        """Обновить статус в сообщении"""
+        message_id = self.status_messages.get(server_name)
+        if not message_id:
+            return
+        
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        messages_map = {
+            "stopping": "⏸️ Останавливаем сервер...",
+            "starting": "▶️ Запускаем сервер...",
+            "waiting": "⏳ Ожидаем доступности сервера...\n(Это может занять до 2 минут)",
+            "ready": "✅ Сервер доступен и отвечает на запросы",
+            "error": "❌ Ошибка при перезагрузке"
+        }
+        
+        status_text = messages_map.get(status, status)
+        
+        message = f"""🔄 **Перезагрузка сервера** 🔄
+
+🖥️ **{server_name}**
+⏰ Время: {current_time}
+
+{emoji} **Статус:** {status_text}"""
+        
+        await self.edit_message(message_id, message)
+    
+    async def send_final_notification(self, server_name: str, server_ip: str, instance_id: str, success: bool, errors: list = None, duration: str = None):
+        """Отправить финальное сообщение о результате"""
+        message_id = self.status_messages.get(server_name)
+        if not message_id:
+            return
+        
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        if success:
             status_emoji = "✅"
-            status_text = "УСПЕШНО"
-            
-            message = f"""{status_emoji} **Перезагрузка ВМ {status_text}** {status_emoji}
-
-📅 Время: {current_time}
-🖥️ Сервер: {result['vm_name']}
-🌐 IP: {result['vm_ip']}
-🆔 Instance ID: `{result['instance_id']}`
-
-**Результат:** {status_text}
-
-✅ ВМ успешно перезагружена
-⏱️ Начало: {result.get('start_time', 'N/A')[:19]}
-⏱️ Конец: {result.get('end_time', 'N/A')[:19]}
-
----
-_Перезагрузка выполнена через API Yandex Cloud_"""
+            status_text = "УСПЕШНО ЗАВЕРШЕНА"
+            result_text = f"""✅ **Результат:** УСПЕШНО
+{duration if duration else ''}
+✅ Все сервисы работают нормально"""
         else:
             status_emoji = "❌"
             status_text = "ОШИБКА"
-            
-            message = f"""{status_emoji} **Перезагрузка ВМ {status_text}** {status_emoji}
-
-📅 Время: {current_time}
-🖥️ Сервер: {result['vm_name']}
-🌐 IP: {result['vm_ip']}
-🆔 Instance ID: `{result['instance_id']}`
-
-**Результат:** {status_text}
+            error_text = "\n".join([f"• {e}" for e in errors]) if errors else "Неизвестная ошибка"
+            result_text = f"""❌ **Результат:** ОШИБКА
 
 **Ошибки:**
-"""
-            for error in result.get('errors', []):
-                message += f"• {error}\n"
-            
-            message += "\n---\n_Перезагрузка выполнена через API Yandex Cloud_"
+{error_text}"""
         
-        await self.send_message(message)
+        message = f"""{status_emoji} **Перезагрузка сервера {status_text}** {status_emoji}
+
+🖥️ **{server_name}** ({server_ip})
+🆔 `{instance_id}`
+⏰ Время: {current_time}
+
+{result_text}
+
+---
+_Перезагрузка выполнена через API Yandex Cloud_"""
+        
+        await self.edit_message(message_id, message)
+    
+    async def send_pause_notification(self, server_name: str, next_server_name: str, duration: int = 120):
+        """Отправить уведомление о паузе между серверами"""
+        message = f"""⏳ **Пауза между перезагрузками**
+
+✅ Сервер **{server_name}** перезагружен
+⏰ Следующий сервер (**{next_server_name}**) будет перезагружен через {duration // 60} минут
+
+_Сообщение будет автоматически удалено через {duration // 60} минут_"""
+        
+        msg = await self.send_message(message)
+        
+        # Удаляем сообщение через duration секунд
+        if msg:
+            await asyncio.sleep(duration)
+            try:
+                for admin_id in self.admin_ids:
+                    await self.bot.delete_message(chat_id=admin_id, message_id=msg.message_id)
+                    logger.info(f"Pause message deleted for {server_name}")
+            except TelegramError as e:
+                logger.error(f"Failed to delete pause message: {e}")
 
 async def restart_single_vm(server_config: dict, vm_manager: YandexCloudVMManager, notifier: TelegramNotifier):
-    """Перезагрузить одну ВМ"""
-    logger.info(f"Starting restart of {server_config['name']}")
+    """Перезагрузить одну ВМ с обновлением статуса"""
+    server_name = server_config['name']
+    logger.info(f"Starting restart of {server_name}")
     
-    # Отправляем уведомление о начале
-    await notifier.send_message(
-        f"🔔 **Начинается перезагрузка {server_config['name']}** 🔔\n\n"
-        f"🖥️ {server_config['name']} ({server_config['ip']})\n"
-        f"🆔 `{server_config['id']}`\n"
-        f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    # Отправляем начальное сообщение
+    await notifier.send_start_notification(
+        server_name=server_name,
+        server_ip=server_config['ip'],
+        instance_id=server_config['id']
     )
     
-    # Выполняем перезагрузку с передачей notifier для промежуточных уведомлений
-    result = await vm_manager.restart_vm(
+    start_time = datetime.now()
+    
+    # Обновляем статус: остановка
+    await notifier.update_status(server_name, "stopping", "⏸️")
+    
+    # Останавливаем ВМ
+    success, error = vm_manager.stop_instance(server_config['id'])
+    if not success:
+        await notifier.update_status(server_name, "error", "❌")
+        await notifier.send_final_notification(
+            server_name=server_name,
+            server_ip=server_config['ip'],
+            instance_id=server_config['id'],
+            success=False,
+            errors=[f"Остановка не удалась: {error}"]
+        )
+        return False
+    
+    # Обновляем статус: запуск
+    await notifier.update_status(server_name, "starting", "▶️")
+    
+    # Запускаем ВМ
+    success, error = vm_manager.start_instance(server_config['id'])
+    if not success:
+        await notifier.update_status(server_name, "error", "❌")
+        await notifier.send_final_notification(
+            server_name=server_name,
+            server_ip=server_config['ip'],
+            instance_id=server_config['id'],
+            success=False,
+            errors=[f"Запуск не удался: {error}"]
+        )
+        return False
+    
+    # Обновляем статус: ожидание
+    await notifier.update_status(server_name, "waiting", "⏳")
+    
+    # Ожидаем доступности сервера (2 минуты = 120 секунд)
+    is_ready = vm_manager.wait_for_server_ready(server_config['ip'], timeout=120)
+    
+    if not is_ready:
+        await notifier.update_status(server_name, "error", "❌")
+        await notifier.send_final_notification(
+            server_name=server_name,
+            server_ip=server_config['ip'],
+            instance_id=server_config['id'],
+            success=False,
+            errors=[f"Сервер не стал доступен за 2 минуты"]
+        )
+        return False
+    
+    # Обновляем статус: готов
+    await notifier.update_status(server_name, "ready", "✅")
+    
+    # Дополнительная пауза для стабилизации (10 секунд)
+    await asyncio.sleep(10)
+    
+    # Финальное сообщение
+    end_time = datetime.now()
+    duration = end_time - start_time
+    duration_str = f"⏱️ **Длительность:** {duration.seconds // 60} мин {duration.seconds % 60} сек"
+    
+    await notifier.send_final_notification(
+        server_name=server_name,
+        server_ip=server_config['ip'],
         instance_id=server_config['id'],
-        vm_name=server_config['name'],
-        vm_ip=server_config['ip'],
-        notifier=notifier
+        success=True,
+        duration=duration_str
     )
     
-    # Отправляем результат
-    await notifier.send_restart_notification(result)
-    return result
+    return True
 
 async def restart_all_vms():
     """Перезагрузить все ВМ по очереди"""
     notifier = TelegramNotifier()
     vm_manager = YandexCloudVMManager(folder_id=os.getenv('YC_FOLDER_ID'))
     
+    # Отправляем общее сообщение о начале
     await notifier.send_message(
         "🔄 **Запущена плановая перезагрузка всех серверов** 🔄\n\n"
         f"📅 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -155,23 +291,24 @@ async def restart_all_vms():
     )
     
     results = []
-    for i, server in enumerate([s for s in SERVERS if s['id']], 1):
-        logger.info(f"Processing server {i}/{len([s for s in SERVERS if s['id']])}: {server['name']}")
+    server_list = [s for s in SERVERS if s['id']]
+    
+    for i, server in enumerate(server_list, 1):
+        logger.info(f"Processing server {i}/{len(server_list)}: {server['name']}")
         
-        result = await restart_single_vm(server, vm_manager, notifier)
-        results.append(result)
+        success = await restart_single_vm(server, vm_manager, notifier)
+        results.append({'server': server['name'], 'success': success})
         
-        # Пауза между перезагрузками серверов (2 минуты)
-        if i < len([s for s in SERVERS if s['id']]):
-            await notifier.send_message(
-                f"⏳ **Пауза между перезагрузками**\n\n"
-                f"Перезагрузка {server['name']} завершена.\n"
-                f"Следующий сервер будет перезагружен через 2 минуты..."
+        # Пауза между перезагрузками (2 минуты)
+        if i < len(server_list):
+            await notifier.send_pause_notification(
+                server_name=server['name'],
+                next_server_name=server_list[i]['name'],
+                duration=120  # 2 минуты
             )
-            await asyncio.sleep(120)  # 5 минут
     
     # Итоговый отчет
-    success_count = sum(1 for r in results if r.get('success', False))
+    success_count = sum(1 for r in results if r['success'])
     failed_count = len(results) - success_count
     
     summary = f"""📊 **Итог плановой перезагрузки**
@@ -185,8 +322,8 @@ async def restart_all_vms():
     if failed_count > 0:
         summary += "**Серверы с ошибками:**\n"
         for r in results:
-            if not r.get('success', False):
-                summary += f"• {r['vm_name']} ({r['vm_ip']})\n"
+            if not r['success']:
+                summary += f"• {r['server']}\n"
     
     await notifier.send_message(summary)
 

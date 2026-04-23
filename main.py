@@ -77,14 +77,11 @@ class TelegramNotifier:
         """Отправить уведомление о результате перезагрузки"""
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        if result['success']:
+        if result.get('success', False):
             status_emoji = "✅"
             status_text = "УСПЕШНО"
-        else:
-            status_emoji = "❌"
-            status_text = "ОШИБКА"
-        
-        message = f"""{status_emoji} **Перезагрузка ВМ {status_text}** {status_emoji}
+            
+            message = f"""{status_emoji} **Перезагрузка ВМ {status_text}** {status_emoji}
 
 📅 Время: {current_time}
 🖥️ Сервер: {result['vm_name']}
@@ -92,14 +89,32 @@ class TelegramNotifier:
 🆔 Instance ID: `{result['instance_id']}`
 
 **Результат:** {status_text}
+
+✅ ВМ успешно перезагружена
+⏱️ Начало: {result.get('start_time', 'N/A')[:19]}
+⏱️ Конец: {result.get('end_time', 'N/A')[:19]}
+
+---
+_Перезагрузка выполнена через API Yandex Cloud_"""
+        else:
+            status_emoji = "❌"
+            status_text = "ОШИБКА"
+            
+            message = f"""{status_emoji} **Перезагрузка ВМ {status_text}** {status_emoji}
+
+📅 Время: {current_time}
+🖥️ Сервер: {result['vm_name']}
+🌐 IP: {result['vm_ip']}
+🆔 Instance ID: `{result['instance_id']}`
+
+**Результат:** {status_text}
+
+**Ошибки:**
 """
-        
-        if result['errors']:
-            message += f"\n**Ошибки:**\n"
-            for error in result['errors']:
+            for error in result.get('errors', []):
                 message += f"• {error}\n"
-        
-        message += f"\n---\n_Перезагрузка выполнена через API Yandex Cloud_"
+            
+            message += "\n---\n_Перезагрузка выполнена через API Yandex Cloud_"
         
         await self.send_message(message)
 
@@ -107,65 +122,88 @@ async def restart_single_vm(server_config: dict, vm_manager: YandexCloudVMManage
     """Перезагрузить одну ВМ"""
     logger.info(f"Starting restart of {server_config['name']}")
     
+    # Отправляем уведомление о начале
     await notifier.send_message(
         f"🔔 **Начинается перезагрузка {server_config['name']}** 🔔\n\n"
         f"🖥️ {server_config['name']} ({server_config['ip']})\n"
+        f"🆔 `{server_config['id']}`\n"
         f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     
+    # Выполняем перезагрузку с передачей notifier для промежуточных уведомлений
     result = await vm_manager.restart_vm(
         instance_id=server_config['id'],
         vm_name=server_config['name'],
-        vm_ip=server_config['ip']
+        vm_ip=server_config['ip'],
+        notifier=notifier
     )
     
+    # Отправляем результат
     await notifier.send_restart_notification(result)
     return result
 
 async def restart_all_vms():
-    """Перезагрузить все ВМ"""
+    """Перезагрузить все ВМ по очереди"""
     notifier = TelegramNotifier()
     vm_manager = YandexCloudVMManager(folder_id=os.getenv('YC_FOLDER_ID'))
     
     await notifier.send_message(
         "🔄 **Запущена плановая перезагрузка всех серверов** 🔄\n\n"
         f"📅 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"📊 Всего серверов: {len(SERVERS)}"
+        f"📊 Всего серверов: {len([s for s in SERVERS if s['id']])}\n\n"
+        f"Перезагрузка будет выполнена последовательно."
     )
     
     results = []
-    for server in SERVERS:
-        if not server['id']:
-            logger.warning(f"Skipping {server['key']} - no instance ID")
-            continue
+    for i, server in enumerate([s for s in SERVERS if s['id']], 1):
+        logger.info(f"Processing server {i}/{len([s for s in SERVERS if s['id']])}: {server['name']}")
         
         result = await restart_single_vm(server, vm_manager, notifier)
         results.append(result)
         
-        # Пауза между серверами
-        if len(results) < len([s for s in SERVERS if s['id']]):
-            await asyncio.sleep(300)  # 5 минут
+        # Пауза между перезагрузками серверов (2 минуты)
+        if i < len([s for s in SERVERS if s['id']]):
+            await notifier.send_message(
+                f"⏳ **Пауза между перезагрузками**\n\n"
+                f"Перезагрузка {server['name']} завершена.\n"
+                f"Следующий сервер будет перезагружен через 2 минуты..."
+            )
+            await asyncio.sleep(120)  # 5 минут
     
-    success_count = sum(1 for r in results if r['success'])
+    # Итоговый отчет
+    success_count = sum(1 for r in results if r.get('success', False))
     failed_count = len(results) - success_count
     
     summary = f"""📊 **Итог плановой перезагрузки**
 
 ✅ Успешно: {success_count}
 ❌ Ошибок: {failed_count}
-📅 Время завершения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+📅 Время завершения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
+    
+    if failed_count > 0:
+        summary += "**Серверы с ошибками:**\n"
+        for r in results:
+            if not r.get('success', False):
+                summary += f"• {r['vm_name']} ({r['vm_ip']})\n"
     
     await notifier.send_message(summary)
 
 async def restart_specific_vm(server_key: str):
-    """Перезагрузить конкретную ВМ"""
+    """Перезагрузить конкретную ВМ по ключу"""
     server_config = next((s for s in SERVERS if s['key'] == server_key), None)
     if not server_config:
         print(f"Server {server_key} not found")
         return
     
+    if not server_config['id']:
+        print(f"Server {server_key} has no instance ID configured")
+        return
+    
     notifier = TelegramNotifier()
     vm_manager = YandexCloudVMManager(folder_id=os.getenv('YC_FOLDER_ID'))
+    
     await restart_single_vm(server_config, vm_manager, notifier)
 
 if __name__ == '__main__':
@@ -180,5 +218,8 @@ if __name__ == '__main__':
             print("Usage:")
             print("  python main.py --all                    # Restart all VMs")
             print("  python main.py --server server1         # Restart specific VM")
+            print("  python main.py --server server2         # Restart specific VM")
+            print("  python main.py --server server3         # Restart specific VM")
+            print("  python main.py --server server4         # Restart specific VM")
     else:
         asyncio.run(restart_all_vms())

@@ -54,46 +54,13 @@ class TelegramNotifier:
         self.bot_token = os.getenv('BOT_TOKEN')
         self.admin_ids = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
         self.bot = Bot(token=self.bot_token) if self.bot_token else None
-        self.status_messages = {}  # Храним ID сообщений для каждого сервера
-    
-    async def send_message(self, message: str):
-        """Отправить новое сообщение всем админам"""
-        if not self.bot:
-            logger.error("Bot not initialized")
-            return
-        
-        for admin_id in self.admin_ids:
-            try:
-                msg = await self.bot.send_message(
-                    chat_id=admin_id,
-                    text=message,
-                    parse_mode='Markdown'
-                )
-                logger.info(f"Message sent to {admin_id}")
-                return msg
-            except TelegramError as e:
-                logger.error(f"Failed to send to {admin_id}: {e}")
-        return None
-    
-    async def edit_message(self, message_id: int, text: str):
-        """Отредактировать существующее сообщение"""
-        if not self.bot:
-            return
-        
-        for admin_id in self.admin_ids:
-            try:
-                await self.bot.edit_message_text(
-                    chat_id=admin_id,
-                    message_id=message_id,
-                    text=text,
-                    parse_mode='Markdown'
-                )
-                logger.info(f"Message {message_id} edited")
-            except TelegramError as e:
-                logger.error(f"Failed to edit message {message_id}: {e}")
+        self.status_messages = {}  # Храним ID сообщения для первого админа
     
     async def send_start_notification(self, server_name: str, server_ip: str, instance_id: str):
-        """Отправить начальное сообщение и сохранить его ID"""
+        """Отправить начальное сообщение (только первому админу)"""
+        if not self.bot or not self.admin_ids:
+            return None
+        
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         message = f"""🔄 **Перезагрузка сервера** 🔄
@@ -104,15 +71,24 @@ class TelegramNotifier:
 
 ⏸️ **Статус:** Останавливаем сервер..."""
         
-        msg = await self.send_message(message)
-        if msg:
+        try:
+            # Отправляем только первому админу
+            msg = await self.bot.send_message(
+                chat_id=self.admin_ids[0],
+                text=message,
+                parse_mode='Markdown'
+            )
             self.status_messages[server_name] = msg.message_id
-        return msg
+            logger.info(f"Start notification sent for {server_name}")
+            return msg
+        except TelegramError as e:
+            logger.error(f"Failed to send start notification: {e}")
+            return None
     
     async def update_status(self, server_name: str, status: str, emoji: str = "⏳"):
-        """Обновить статус в сообщении"""
+        """Обновить статус в сообщении (только для первого админа)"""
         message_id = self.status_messages.get(server_name)
-        if not message_id:
+        if not message_id or not self.bot or not self.admin_ids:
             return
         
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -134,12 +110,21 @@ class TelegramNotifier:
 
 {emoji} **Статус:** {status_text}"""
         
-        await self.edit_message(message_id, message)
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.admin_ids[0],
+                message_id=message_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            logger.info(f"Status updated for {server_name}: {status}")
+        except TelegramError as e:
+            logger.error(f"Failed to update status for {server_name}: {e}")
     
     async def send_final_notification(self, server_name: str, server_ip: str, instance_id: str, success: bool, errors: list = None, duration: str = None):
         """Отправить финальное сообщение о результате"""
         message_id = self.status_messages.get(server_name)
-        if not message_id:
+        if not message_id or not self.bot or not self.admin_ids:
             return
         
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -170,10 +155,36 @@ class TelegramNotifier:
 ---
 _Перезагрузка выполнена через API Yandex Cloud_"""
         
-        await self.edit_message(message_id, message)
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.admin_ids[0],
+                message_id=message_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            logger.info(f"Final notification sent for {server_name}")
+        except TelegramError as e:
+            logger.error(f"Failed to send final notification: {e}")
+    
+    async def send_broadcast_message(self, message: str):
+        """Отправить сообщение ВСЕМ админам (для важных уведомлений)"""
+        if not self.bot:
+            return
+        
+        for admin_id in self.admin_ids:
+            try:
+                await self.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode='Markdown'
+                )
+                logger.info(f"Broadcast message sent to {admin_id}")
+                await asyncio.sleep(0.5)
+            except TelegramError as e:
+                logger.error(f"Failed to send broadcast to {admin_id}: {e}")
     
     async def send_pause_notification(self, server_name: str, next_server_name: str, duration: int = 120):
-        """Отправить уведомление о паузе между серверами"""
+        """Отправить уведомление о паузе между серверами (всем админам)"""
         message = f"""⏳ **Пауза между перезагрузками**
 
 ✅ Сервер **{server_name}** перезагружен
@@ -181,17 +192,34 @@ _Перезагрузка выполнена через API Yandex Cloud_"""
 
 _Сообщение будет автоматически удалено через {duration // 60} минут_"""
         
-        msg = await self.send_message(message)
-        
-        # Удаляем сообщение через duration секунд
-        if msg:
-            await asyncio.sleep(duration)
+        messages = []
+        for admin_id in self.admin_ids:
             try:
-                for admin_id in self.admin_ids:
-                    await self.bot.delete_message(chat_id=admin_id, message_id=msg.message_id)
-                    logger.info(f"Pause message deleted for {server_name}")
+                msg = await self.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode='Markdown'
+                )
+                messages.append({'admin_id': admin_id, 'message_id': msg.message_id})
+                logger.info(f"Pause notification sent to {admin_id}")
+                await asyncio.sleep(0.5)
             except TelegramError as e:
-                logger.error(f"Failed to delete pause message: {e}")
+                logger.error(f"Failed to send pause notification to {admin_id}: {e}")
+        
+        # Удаляем сообщения через duration секунд
+        async def delete_messages():
+            await asyncio.sleep(duration)
+            for item in messages:
+                try:
+                    await self.bot.delete_message(
+                        chat_id=item['admin_id'],
+                        message_id=item['message_id']
+                    )
+                    logger.info(f"Pause message deleted for admin {item['admin_id']}")
+                except TelegramError as e:
+                    logger.error(f"Failed to delete pause message: {e}")
+        
+        asyncio.create_task(delete_messages())
 
 async def restart_single_vm(server_config: dict, vm_manager: YandexCloudVMManager, notifier: TelegramNotifier):
     """Перезагрузить одну ВМ с обновлением статуса"""
@@ -282,8 +310,8 @@ async def restart_all_vms():
     notifier = TelegramNotifier()
     vm_manager = YandexCloudVMManager(folder_id=os.getenv('YC_FOLDER_ID'))
     
-    # Отправляем общее сообщение о начале
-    await notifier.send_message(
+    # Отправляем общее сообщение о начале (всем админам)
+    await notifier.send_broadcast_message(
         "🔄 **Запущена плановая перезагрузка всех серверов** 🔄\n\n"
         f"📅 Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"📊 Всего серверов: {len([s for s in SERVERS if s['id']])}\n\n"
@@ -307,7 +335,7 @@ async def restart_all_vms():
                 duration=120  # 2 минуты
             )
     
-    # Итоговый отчет
+    # Итоговый отчет (всем админам)
     success_count = sum(1 for r in results if r['success'])
     failed_count = len(results) - success_count
     
@@ -325,7 +353,7 @@ async def restart_all_vms():
             if not r['success']:
                 summary += f"• {r['server']}\n"
     
-    await notifier.send_message(summary)
+    await notifier.send_broadcast_message(summary)
 
 async def restart_specific_vm(server_key: str):
     """Перезагрузить конкретную ВМ по ключу"""
@@ -340,6 +368,14 @@ async def restart_specific_vm(server_key: str):
     
     notifier = TelegramNotifier()
     vm_manager = YandexCloudVMManager(folder_id=os.getenv('YC_FOLDER_ID'))
+    
+    # Отправляем уведомление о ручной перезагрузке всем админам
+    await notifier.send_broadcast_message(
+        f"🔧 **Ручная перезагрузка сервера** 🔧\n\n"
+        f"🖥️ **{server_config['name']}** ({server_config['ip']})\n"
+        f"👤 Инициатор: Администратор\n"
+        f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
     
     await restart_single_vm(server_config, vm_manager, notifier)
 

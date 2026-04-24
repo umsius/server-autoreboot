@@ -16,16 +16,16 @@ from yandex.cloud.compute.v1.instance_service_pb2 import (
 )
 from yandex.cloud.compute.v1.instance_pb2 import Instance
 
-# Загрузка JSON-ключа сервисного аккаунта
-with open('key.json', 'r') as f:
-    SA_KEY = json.load(f)
-
 class YandexCloudVMManager:
     """Управление виртуальными машинами в Yandex Cloud через API"""
     
-    def __init__(self, folder_id: str):
+    def __init__(self, folder_id: str, key_file: str = 'key.json'):
         self.folder_id = folder_id
-        self.sdk = yandexcloud.SDK(service_account_key=SA_KEY)
+        self.key_file = key_file
+        # Загрузка JSON-ключа сервисного аккаунта
+        with open(key_file, 'r') as f:
+            sa_key = json.load(f)
+        self.sdk = yandexcloud.SDK(service_account_key=sa_key)
         self.instance_service = self.sdk.client(InstanceServiceStub)
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -54,39 +54,45 @@ class YandexCloudVMManager:
             self.logger.error(f"Error getting status for {instance_id}: {e}")
             return None, str(e)
     
-    def stop_instance(self, instance_id: str) -> Tuple[bool, Optional[str]]:
-        """Остановить ВМ"""
-        try:
-            self.logger.info(f"Stopping instance {instance_id}")
-            request = StopInstanceRequest(instance_id=instance_id)
-            
-            operation = self.instance_service.Stop(request)
-            self.sdk.wait_operation_and_get_result(operation, timeout=120)
-            
-            self.logger.info(f"Instance {instance_id} stopped successfully")
-            return True, None
-            
-        except Exception as e:
-            error_msg = str(e)
-            self.logger.error(f"Failed to stop instance {instance_id}: {error_msg}")
-            return False, error_msg
-    
-    def start_instance(self, instance_id: str) -> Tuple[bool, Optional[str]]:
-        """Запустить ВМ"""
-        try:
-            self.logger.info(f"Starting instance {instance_id}")
-            request = StartInstanceRequest(instance_id=instance_id)
-            
-            operation = self.instance_service.Start(request)
-            self.sdk.wait_operation_and_get_result(operation, timeout=300)
-            
-            self.logger.info(f"Instance {instance_id} started successfully")
-            return True, None
-            
-        except Exception as e:
-            error_msg = str(e)
-            self.logger.error(f"Failed to start instance {instance_id}: {error_msg}")
-            return False, error_msg
+    def stop_instance(self, instance_id: str, retry: int = 3) -> Tuple[bool, Optional[str]]:
+        """Остановить ВМ с повторными попытками"""
+        for attempt in range(retry):
+            try:
+                self.logger.info(f"Stopping instance {instance_id} (attempt {attempt + 1})")
+                request = StopInstanceRequest(instance_id=instance_id)
+                operation = self.instance_service.Stop(request)
+                self.sdk.wait_operation_and_get_result(operation, timeout=120)
+                self.logger.info(f"Instance {instance_id} stopped successfully")
+                return True, None
+            except Exception as e:
+                error_msg = str(e)
+                if "FAILED_PRECONDITION" in error_msg and attempt < retry - 1:
+                    self.logger.warning(f"Stop operation in progress, waiting 30 seconds and retrying...")
+                    time.sleep(30)
+                    continue
+                self.logger.error(f"Failed to stop instance {instance_id}: {error_msg}")
+                return False, error_msg
+        return False, "Max retries exceeded"
+
+    def start_instance(self, instance_id: str, retry: int = 3) -> Tuple[bool, Optional[str]]:
+        """Запустить ВМ с повторными попытками"""
+        for attempt in range(retry):
+            try:
+                self.logger.info(f"Starting instance {instance_id} (attempt {attempt + 1})")
+                request = StartInstanceRequest(instance_id=instance_id)
+                operation = self.instance_service.Start(request)
+                self.sdk.wait_operation_and_get_result(operation, timeout=300)
+                self.logger.info(f"Instance {instance_id} started successfully")
+                return True, None
+            except Exception as e:
+                error_msg = str(e)
+                if "FAILED_PRECONDITION" in error_msg and attempt < retry - 1:
+                    self.logger.warning(f"Start operation in progress, waiting 30 seconds and retrying...")
+                    time.sleep(30)
+                    continue
+                self.logger.error(f"Failed to start instance {instance_id}: {error_msg}")
+                return False, error_msg
+        return False, "Max retries exceeded"
     
     def check_tcp_port(self, ip: str, port: int = 22, timeout: int = 5) -> bool:
         """Проверить доступность TCP порта на сервере"""
@@ -127,11 +133,9 @@ class YandexCloudVMManager:
         while (time.time() - start_time) < timeout:
             check_count += 1
             
-            # Шаг 1: Проверяем ping
             if self.check_ping(ip):
                 self.logger.info(f"✅ {ip} is responding to ping (check #{check_count})")
                 
-                # Шаг 2: Проверяем TCP порт 22 (SSH)
                 if self.check_tcp_port(ip, port=22, timeout=5):
                     self.logger.info(f"✅ {ip}:22 is open (SSH ready)")
                     return True
@@ -140,7 +144,6 @@ class YandexCloudVMManager:
             else:
                 self.logger.info(f"⏳ Waiting for {ip} to become available... (check #{check_count})")
             
-            # Ждем 10 секунд перед следующей проверкой
             time.sleep(10)
         
         self.logger.error(f"❌ Server {ip} did not become ready within {timeout}s")
@@ -156,12 +159,12 @@ class YandexCloudVMManager:
             'vm_name': vm_name,
             'vm_ip': vm_ip,
             'instance_id': instance_id,
+            'key_file': self.key_file,
             'start_time': datetime.now().isoformat(),
             'end_time': None,
             'errors': []
         }
         
-        # Проверяем текущий статус
         status, error = self.get_instance_status(instance_id)
         if error:
             result['errors'].append(f"Failed to get status: {error}")
@@ -177,7 +180,6 @@ class YandexCloudVMManager:
             result['errors'].append(f"VM is in {status} state, cannot restart")
             return result
         
-        # Останавливаем ВМ
         self.logger.info(f"Stopping {vm_name}...")
         if notifier:
             await notifier.update_status(vm_name, "stopping", "⏸️")
@@ -191,10 +193,8 @@ class YandexCloudVMManager:
         
         self.logger.info(f"{vm_name} stopped successfully")
         
-        # Ждем 10 секунд перед запуском
         await asyncio.sleep(10)
         
-        # Запускаем ВМ
         self.logger.info(f"Starting {vm_name}...")
         if notifier:
             await notifier.update_status(vm_name, "starting", "▶️")
@@ -208,18 +208,16 @@ class YandexCloudVMManager:
         
         self.logger.info(f"{vm_name} started successfully")
         
-        # Ожидаем доступности сервера
         self.logger.info(f"Waiting for {vm_name} ({vm_ip}) to become available...")
         if notifier:
             await notifier.update_status(vm_name, "waiting", "⏳")
         
-        # Проверяем доступность в отдельном потоке (таймаут 120 секунд = 2 минуты)
         loop = asyncio.get_event_loop()
         is_ready = await loop.run_in_executor(
             None, 
             self.wait_for_server_ready, 
             vm_ip, 
-            120  # 2 минуты таймаут
+            120
         )
         
         if not is_ready:
@@ -232,10 +230,8 @@ class YandexCloudVMManager:
         if notifier:
             await notifier.update_status(vm_name, "ready", "✅")
         
-        # Дополнительная пауза для стабилизации сервисов (10 секунд)
         await asyncio.sleep(10)
         
-        # Проверяем финальный статус ВМ
         final_status, error = self.get_instance_status(instance_id)
         if error:
             result['errors'].append(f"Final status check failed: {error}")

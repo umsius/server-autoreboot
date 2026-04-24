@@ -2,7 +2,7 @@
 
 Бот для автоматической перезагрузки виртуальных машин в Yandex Cloud через Telegram с обновлением статуса в одном сообщении.
 
-## 📋 Требования
+## Требования
 
 - Внешний VPS (Ubuntu/Debian) с выходом в интернет
 - Сервисная учетная запись в Yandex Cloud с ролью `compute.editor`
@@ -10,7 +10,7 @@
 - Telegram Bot Token (получить у @BotFather)
 - Telegram Chat ID администраторов
 
-## 🚀 Полная инструкция по установке
+##  Полная инструкция по установке
 
 ### Подготовка Yandex Cloud
 
@@ -41,7 +41,7 @@ yc iam key create --service-account-name vm-manager-bot --output key.json
 yc compute instance list
 ```
 # Настройка внешнего VPS
-Подключитесь к вашему VPS (например 1.1.1.1)
+Подключитесь к вашему VPS
 ```ssh root@<ip-вашего-vps>```
 
 Создание директории проекта
@@ -56,15 +56,16 @@ cd /opt/vm-restart-bot
 ```chmod 600 key.json```
 
 # Установка зависимостей Python
-pip3 install -r requirements.txt
+```pip3 install -r requirements.txt```
 
 # Создание .env файла (замените значения на свои)
-cat > .env << 'EOF'
+```cat > .env << 'EOF'
 # Telegram Bot Configuration
-BOT_TOKEN="8279756948:AAEfi5MPIpBxIiUkNEH_aQzPsglWmz7RGwI"
-ADMIN_IDS="312465575,391112177"
-
+BOT_TOKEN="token"
+ADMIN_IDS="123456789,123456789"
+```
 # Yandex Cloud Default Configuration
+```
 YC_FOLDER_ID=""
 
 # Сервер 1
@@ -95,53 +96,58 @@ SERVER4_IP=""
 SERVER4_KEY_FILE=""
 SERVER4_FOLDER_ID=""
 EOF
-
+```
 # Создание requirements.txt
+```
 cat > requirements.txt << 'EOF'
 python-telegram-bot==20.7
 yandexcloud==0.285.0
 python-dotenv==1.0.0
 EOF
-
+```
 # Установка зависимостей
-pip3 install -r requirements.txt
+```pip3 install -r requirements.txt```
 
 # Создание файлов vm_manager.py и main.py (скопируйте содержимое из репозитория)
-nano vm_manager.py
-nano main.py
 
 # Проверка работы
-python3 main.py --server server1
+```python3 main.py --server server1```
 
 # Настройка автоматической перезагрузки по расписанию (ежедневно в 8:55)
 crontab -e
 
 # Добавьте строку:
-55 8 * * * cd /opt/vm-restart-bot && /usr/bin/python3 main.py --all >> /var/log/vm_restart.log 2>&1
+```55 8 * * * cd /opt/vm-restart-bot && /usr/bin/python3 main.py --all >> /var/log/vm_restart.log 2>&1```
 
 # Просмотр логов
-tail -f /var/log/vm_restart.log
+```tail -f /var/log/vm_restart.log```
 
 # Ручная перезагрузка всех серверов
-python3 main.py --all
+```python3 main.py --all```
 
 # Ручная перезагрузка конкретного сервера
+```
 python3 main.py --server server1
 python3 main.py --server server2
 python3 main.py --server server3
 python3 main.py --server server4
+```
 
 # Проверка статуса серверов через CLI
-yc compute instance list --folder-id b1g07pnm3dkpktvbgo80
+```yc compute instance list --folder-id ID```
 
 # Для работы с несколькими аккаунтами используйте разные профили
+```
 yc config profile create account-b
 yc config set service-account-key key2.json
-yc config set folder-id b1gt1eshrqfqdtq3d4cl
+yc config set folder-id ID
+```
 
 # Просмотр активных профилей
-yc config profile list
+```yc config profile list```
 
 # Переключение между профилями
+```
 yc config profile activate default
 yc config profile activate account-b
+```

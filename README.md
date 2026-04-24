@@ -40,31 +40,31 @@ yc iam key create --service-account-name vm-manager-bot --output key.json
 # Получение Instance ID ваших ВМ
 yc compute instance list
 ```
-# Настройка внешнего VPS
+### Настройка внешнего VPS
 Подключитесь к вашему VPS
 ```ssh root@<ip-вашего-vps>```
 
-Создание директории проекта
+### Создание директории проекта
 ```
 mkdir -p /opt/vm-restart-bot
 cd /opt/vm-restart-bot
 ```
-Скопируйте файл key.json с вашей локальной машины на VPS (выполните на локальной машине)
+### Скопируйте файл key.json с вашей локальной машины на VPS (выполните на локальной машине)
 ```scp key.json root@<ip-вашего-vps>:/opt/vm-restart-bot/```
 
 ### На VPS установите правильные права на ключ
 ```chmod 600 key.json```
 
-# Установка зависимостей Python
+### Установка зависимостей Python
 ```pip3 install -r requirements.txt```
 
-# Создание .env файла (замените значения на свои)
+### Создание .env файла (замените значения на свои)
 ```cat > .env << 'EOF'
 # Telegram Bot Configuration
 BOT_TOKEN="token"
 ADMIN_IDS="123456789,123456789"
 ```
-# Yandex Cloud Default Configuration
+### Yandex Cloud Default Configuration
 ```
 YC_FOLDER_ID=""
 
@@ -97,7 +97,7 @@ SERVER4_KEY_FILE=""
 SERVER4_FOLDER_ID=""
 EOF
 ```
-# Создание requirements.txt
+### Создание requirements.txt
 ```
 cat > requirements.txt << 'EOF'
 python-telegram-bot==20.7
@@ -105,27 +105,27 @@ yandexcloud==0.285.0
 python-dotenv==1.0.0
 EOF
 ```
-# Установка зависимостей
+### Установка зависимостей
 ```pip3 install -r requirements.txt```
 
-# Создание файлов vm_manager.py и main.py (скопируйте содержимое из репозитория)
+### Создание файлов vm_manager.py и main.py (скопируйте содержимое из репозитория)
 
-# Проверка работы
+### Проверка работы
 ```python3 main.py --server server1```
 
-# Настройка автоматической перезагрузки по расписанию (ежедневно в 8:55)
+### Настройка автоматической перезагрузки по расписанию (ежедневно в 8:55)
 crontab -e
 
-# Добавьте строку:
+### Добавьте строку:
 ```55 8 * * * cd /opt/vm-restart-bot && /usr/bin/python3 main.py --all >> /var/log/vm_restart.log 2>&1```
 
-# Просмотр логов
+### Просмотр логов
 ```tail -f /var/log/vm_restart.log```
 
-# Ручная перезагрузка всех серверов
+### Ручная перезагрузка всех серверов
 ```python3 main.py --all```
 
-# Ручная перезагрузка конкретного сервера
+### Ручная перезагрузка конкретного сервера
 ```
 python3 main.py --server server1
 python3 main.py --server server2
@@ -133,20 +133,20 @@ python3 main.py --server server3
 python3 main.py --server server4
 ```
 
-# Проверка статуса серверов через CLI
+### Проверка статуса серверов через CLI
 ```yc compute instance list --folder-id ID```
 
-# Для работы с несколькими аккаунтами используйте разные профили
+### Для работы с несколькими аккаунтами используйте разные профили
 ```
 yc config profile create account-b
 yc config set service-account-key key2.json
 yc config set folder-id ID
 ```
 
-# Просмотр активных профилей
+### Просмотр активных профилей
 ```yc config profile list```
 
-# Переключение между профилями
+### Переключение между профилями
 ```
 yc config profile activate default
 yc config profile activate account-b
